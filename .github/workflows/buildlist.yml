@@ -1,0 +1,63 @@
+name: Build Symbol List
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  buildlist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cache vnstock device registration
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.vnstock
+            ~/.config/vnstock
+            /home/runner/.vnstock
+            /home/runner/.config/vnstock
+          key: vnstock-device-${{ runner.os }}
+          restore-keys: |
+            vnstock-device-
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Install vnstock-cli
+        run: |
+          wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
+          chmod +x installer.run
+          ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
+
+      - name: Install dependencies
+        run: |
+          uv pip install --python /home/runner/.venv/bin/python \
+            pandas numpy requests "python-telegram-bot==20.7"
+          /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
+          /home/runner/.venv/bin/python -c "from vnstock import Vnstock; print('vnstock OK')"
+
+      - name: Run Build List
+        run: /home/runner/.venv/bin/python buildlist.py
+        env:
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Commit vn_stocks_full.txt
+        if: always()
+        run: |
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@github.com'
+          git add vn_stocks_full.txt || true
+          git diff --cached --quiet && echo 'No changes' && exit 0
+          git commit -m 'Auto update vn_stocks_full.txt'
+          git pull --rebase origin main
+          git push origin main

@@ -1,0 +1,54 @@
+name: Weekly Scan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  weeklyscan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vnstock device registration
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.vnstock
+            ~/.config/vnstock
+            /home/runner/.vnstock
+            /home/runner/.config/vnstock
+          key: vnstock-device-${{ runner.os }}
+          restore-keys: |
+            vnstock-device-
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Install vnstock-cli
+        run: |
+          wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
+          chmod +x installer.run
+          ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
+
+      - name: Install dependencies
+        run: |
+          uv pip install --python /home/runner/.venv/bin/python \
+            pandas numpy requests "python-telegram-bot==20.7"
+          /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
+          /home/runner/.venv/bin/python -c "from vnstock import Vnstock; print('vnstock OK')"
+
+      - name: Run Weekly Scan
+        run: /home/runner/.venv/bin/python weeklyscan.py
+        env:
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Upload CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ket_qua_weekly
+          path: ket_qua_weekly_*.csv
