@@ -89,7 +89,9 @@ def get_all_symbols(filename="vn_stocks_full.txt"):
     try:
         with open(filename, "r", encoding="utf-8") as f:
             raw = [line.strip() for line in f if line.strip()]
-        symbols = [s for s in raw if 2 <= len(s) <= 5 and s.isalpha()]
+        # Strip brackets: [PC1] -> PC1, [pc1] -> PC1
+        cleaned = [s.strip("[]").upper() for s in raw]
+        symbols = [s for s in cleaned if 2 <= len(s) <= 5 and s.isalnum()]
         exclude = {"E1VFVN30","FUEKIVFS","FUEMAV30","FUEMAVND",
                    "FUESSV30","FUESSVFL","FUETCC50","FUEVFVND","FUEVN100"}
         return [s for s in dict.fromkeys(symbols) if s not in exclude]
@@ -529,7 +531,7 @@ async def handle_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip().upper()
+    text = update.message.text.strip().strip("[]").upper()
     if not (2 <= len(text) <= 5 and text.isalnum()):
         await update.message.reply_text("Nhap ma co phieu (VD: VCB)\n/scanall /config /set /fiststop")
         return
