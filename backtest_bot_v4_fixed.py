@@ -17,7 +17,7 @@
 # ============================================================
 
 import os
-TOKEN   = os.environ["TELEGRAM_TOKEN2"]
+TOKEN   = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 import asyncio
