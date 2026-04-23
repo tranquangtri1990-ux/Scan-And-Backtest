@@ -75,9 +75,9 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
         with open(filename, 'r', encoding='utf-8') as f:
             raw = [line.strip().upper() for line in f if line.strip()]
 
-        # Chỉ giữ mã gồm toàn chữ cái A-Z, độ dài 2-5 ký tự
-        # Loại bỏ mọi mã có chứa chữ số (PC1, VN30, F1M, ...) bằng regex tường minh
-        symbols = [s for s in raw if re.fullmatch(r'[A-Z]{2,5}', s)]
+        # Giữ mã bắt đầu bằng chữ cái, tiếp theo là chữ/số, độ dài 2-5 ký tự
+        # Hợp lệ: AAA, PC1, TV1, VC2, HT1, NT2, C4G ... | Loại: FUEVN100, ký tự đặc biệt
+        symbols = [s for s in raw if re.fullmatch(r'[A-Z][A-Z0-9]{1,4}', s)]
 
         # Loại ETF và các mã đặc biệt đã biết
         exclude = {
