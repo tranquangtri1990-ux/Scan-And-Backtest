@@ -13,6 +13,7 @@ CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 import asyncio
 import logging
 import threading
+import re
 import pandas as pd
 import numpy as np
 import time
@@ -72,12 +73,24 @@ def get_vnstock_class():
 def get_all_symbols(filename='vn_stocks_full.txt'):
     try:
         with open(filename, 'r', encoding='utf-8') as f:
-            raw = [line.strip() for line in f if line.strip()]
-        symbols = [s for s in raw if 2 <= len(s) <= 5 and s.isalpha()]
-        exclude = {'E1VFVN30', 'FUEKIVFS', 'FUEMAV30', 'FUEMAVND',
-                   'FUESSV30', 'FUESSVFL', 'FUETCC50', 'FUEVFVND', 'FUEVN100'}
-        return [s for s in dict.fromkeys(symbols) if s not in exclude]
-    except:
+            raw = [line.strip().upper() for line in f if line.strip()]
+
+        # Chỉ giữ mã gồm toàn chữ cái A-Z, độ dài 2-5 ký tự
+        # Loại bỏ mọi mã có chứa chữ số (PC1, VN30, F1M, ...) bằng regex tường minh
+        symbols = [s for s in raw if re.fullmatch(r'[A-Z]{2,5}', s)]
+
+        # Loại ETF và các mã đặc biệt đã biết
+        exclude = {
+            'E1VFVN30', 'FUEKIVFS', 'FUEMAV30', 'FUEMAVND',
+            'FUESSV30', 'FUESSVFL', 'FUETCC50', 'FUEVFVND', 'FUEVN100'
+        }
+        filtered = [s for s in dict.fromkeys(symbols) if s not in exclude]
+
+        logging.info('[symbols] Đọc %d dòng → %d mã hợp lệ (đã lọc mã có số)',
+                     len(raw), len(filtered))
+        return filtered
+    except Exception as e:
+        logging.error('[symbols] Lỗi đọc file: %s', e)
         return []
 
 # ============================================================
