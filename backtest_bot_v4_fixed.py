@@ -4,10 +4,10 @@
 #   [MA]              : backtest 1 ma
 #   /scanall          : backtest toan bo
 #   /config           : xem tham so hien tai
-#   /set vol [so]     : volume % MA20        (10-200, mac dinh 120)
-#   /set trend [so]   : so phien xu huong    (0-10,   mac dinh 1)
-#   /set stop [so]    : trailing stop %      (1-50,   mac dinh 10)
-#   /fiststop [so]    : fixed stop % tu gia mua (1-50, mac dinh 15)
+#   /set vol [so]     : volume % MA20        (10-200, mac dinh 30)
+#   /set trend [so]   : so phien xu huong    (0-10,   mac dinh 0)
+#   /set stop [so]    : trailing stop %      (1-50,   mac dinh 15)
+#   /fiststop [so]    : fixed stop % tu gia mua (1-50, mac dinh 10)
 #   /year [nam]       : nam bat dau backtest (2020-2026, mac dinh 2023)
 # ============================================================
 # DUAL STOP LOGIC:
@@ -40,10 +40,10 @@ logging.basicConfig(
 )
 
 CONFIG = {
-    "vol_pct":       120,
-    "trend_n":       1,
-    "stop_pct":      10,
-    "first_stop_pct": 15,
+    "vol_pct":       30,
+    "trend_n":       0,
+    "stop_pct":      15,
+    "first_stop_pct": 10,
     "year":          2023,
 }
 
