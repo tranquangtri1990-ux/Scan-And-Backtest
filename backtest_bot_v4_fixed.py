@@ -9,6 +9,7 @@
 #   /set stop [so]    : trailing stop %      (1-50,   mac dinh 15)
 #   /fiststop [so]    : fixed stop % tu gia mua (1-50, mac dinh 10)
 #   /year [nam]       : nam bat dau backtest (2020-2026, mac dinh 2023)
+#   /yearend [nam]    : nam ket thuc backtest (mac dinh: toi hien tai)
 # ============================================================
 # DUAL STOP LOGIC:
 #   trailing_stop = dinh_gia * (1 - stop%)   <- tang theo dinh moi
@@ -45,6 +46,7 @@ CONFIG = {
     "stop_pct":      15,
     "first_stop_pct": 10,
     "year":          2023,
+    "yearend":       None,   # None = backtest toi hien tai
 }
 
 # ============================================================
@@ -211,13 +213,23 @@ def run_backtest(symbol, initial_capital=50_000_000,
         return {"error": f"Khong lay duoc du lieu cho ma {symbol} | {err}"}
 
     df_w    = calc_indicators(weekly)
-    bt_year = CONFIG["year"]
+    bt_year    = CONFIG["year"]
+    bt_yearend = CONFIG["yearend"]
     bt_start = f"{bt_year}-01-01"
-    df_w_bt = df_w[df_w.index >= bt_start]
-    if df_w_bt.empty:
-        return {"error": f"Khong co du lieu tu nam {bt_year}"}
+    bt_end   = f"{bt_yearend}-12-31" if bt_yearend else None
 
-    daily_bt   = daily[daily.index >= bt_start].copy()
+    if bt_end:
+        df_w_bt = df_w[(df_w.index >= bt_start) & (df_w.index <= bt_end)]
+    else:
+        df_w_bt = df_w[df_w.index >= bt_start]
+    if df_w_bt.empty:
+        rng = f"{bt_year}-{bt_yearend}" if bt_yearend else f"{bt_year}"
+        return {"error": f"Khong co du lieu trong khoang {rng}"}
+
+    if bt_end:
+        daily_bt = daily[(daily.index >= bt_start) & (daily.index <= bt_end)].copy()
+    else:
+        daily_bt = daily[daily.index >= bt_start].copy()
     daily_list = list(daily_bt.iterrows())
 
     capital, trades, position, day_idx = initial_capital, [], None, 0
@@ -360,6 +372,7 @@ def run_backtest(symbol, initial_capital=50_000_000,
         "stop_pct":      stop_pct,
         "first_stop_pct": first_stop_pct,
         "year":          CONFIG["year"],
+        "yearend":       CONFIG["yearend"],
     }
 
 # ============================================================
@@ -369,9 +382,10 @@ def format_result(r):
     if "error" in r:
         return [f"Loi: {r['error']}"]
 
+    nam_str = f"{r['year']} - {r['yearend']}" if r.get('yearend') else f"{r['year']} - hien tai"
     msgs = [(
         f"<b>BACKTEST {r['symbol']} — DUAL STOP</b>\n"
-        f"Nam: {r['year']} | Vol>{r['vol_pct']}% | Trend {r['trend_n']}p\n"
+        f"Nam: {nam_str} | Vol>{r['vol_pct']}% | Trend {r['trend_n']}p\n"
         f"Trailing stop: {r['stop_pct']}% | First stop: {r['first_stop_pct']}%\n"
         f"Von ban dau : {r['von_ban_dau']:,.0f}d\n"
         f"Von cuoi    : {r['von_cuoi']:,.0f}d\n"
@@ -434,13 +448,15 @@ async def handle_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Trend        : {CONFIG['trend_n']} phien        (0-10)\n"
         f"Trailing stop: {CONFIG['stop_pct']}%            (1-50)\n"
         f"First stop   : {CONFIG['first_stop_pct']}%            (1-50)\n"
-        f"Nam BT       : {CONFIG['year']}          (2020-2026)\n\n"
+        f"Nam BT       : {CONFIG['year']}          (2020-2026)\n"
+        f"Nam ket thuc : {CONFIG['yearend'] if CONFIG['yearend'] else 'hien tai'}\n\n"
         f"Thay doi:\n"
         f"  /set vol [so]      -> % volume\n"
         f"  /set trend [so]    -> so phien xu huong\n"
         f"  /set stop [so]     -> % trailing stop\n"
         f"  /fiststop [so]     -> % fixed stop tu gia mua\n"
-        f"  /year [nam]        -> nam bat dau backtest",
+        f"  /year [nam]        -> nam bat dau backtest\n"
+        f"  /yearend [nam]     -> nam ket thuc backtest (khong nhap = hien tai)",
         parse_mode="HTML"
     )
 
@@ -513,7 +529,8 @@ async def handle_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Cu phap: /year [nam]\n"
             f"  Vi du: /year 2023\n"
             f"  Pham vi: 2020 - {current_year}\n"
-            f"  Nam hien tai: {CONFIG['year']}"
+            f"  Nam hien tai: {CONFIG['year']}\n\n"
+            f"Dung /yearend [nam] de set nam ket thuc backtest."
         )
         return
     try:
@@ -530,14 +547,48 @@ async def handle_year(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+async def handle_yearend(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args
+    current_year = datetime.now(VN_TZ).year
+    if len(args) == 0:
+        CONFIG["yearend"] = None
+        await update.message.reply_text(
+            f"Da cap nhat: Backtest den <b>hien tai</b>",
+            parse_mode="HTML"
+        )
+        return
+    if len(args) != 1:
+        await update.message.reply_text(
+            f"Cu phap: /yearend [nam]\n"
+            f"  Vi du: /yearend 2024\n"
+            f"  Pham vi: {CONFIG['year']} - {current_year}\n"
+            f"  Khong nhap gi -> quay ve mac dinh (toi hien tai)\n"
+            f"  Nam ket thuc hien tai: {CONFIG['yearend'] if CONFIG['yearend'] else 'hien tai'}"
+        )
+        return
+    try:
+        yearend = int(args[0])
+    except ValueError:
+        await update.message.reply_text("Nam phai la so nguyen. Vi du: /yearend 2024")
+        return
+    if not (CONFIG["year"] <= yearend <= current_year):
+        await update.message.reply_text(f"Nam ket thuc phai tu {CONFIG['year']} (nam bat dau) den {current_year}.")
+        return
+    CONFIG["yearend"] = yearend
+    await update.message.reply_text(
+        f"Da cap nhat: Backtest den nam <b>{yearend}</b>",
+        parse_mode="HTML"
+    )
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().strip("[]").upper()
     if not (2 <= len(text) <= 5 and text.isalnum()):
         await update.message.reply_text("Nhap ma co phieu (VD: VCB)\n/scanall /config /set /fiststop")
         return
+    nam_str = f"{CONFIG['year']} - {CONFIG['yearend']}" if CONFIG['yearend'] else f"{CONFIG['year']} - hien tai"
     await update.message.reply_text(
         f"<b>Dang chay backtest {text}...</b>\n"
-        f"Nam: {CONFIG['year']} | Vol>{CONFIG['vol_pct']}% | Trend {CONFIG['trend_n']}p\n"
+        f"Nam: {nam_str} | Vol>{CONFIG['vol_pct']}% | Trend {CONFIG['trend_n']}p\n"
         f"Trailing: {CONFIG['stop_pct']}% | First stop: {CONFIG['first_stop_pct']}%",
         parse_mode="HTML"
     )
@@ -560,12 +611,13 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stop_pct       = CONFIG["stop_pct"]
     first_stop_pct = CONFIG["first_stop_pct"]
     start_time     = time.time()
+    nam_str = f"{CONFIG['year']} - {CONFIG['yearend']}" if CONFIG['yearend'] else f"{CONFIG['year']} - hien tai"
     await context.bot.send_message(
         chat_id=chat_id, parse_mode="HTML",
         text=(
             f"<b>BAT DAU SCAN TOAN BO</b>\n"
             f"Tong so ma : <b>{total}</b>\n"
-            f"Nam BT     : {CONFIG['year']}\n"
+            f"Nam BT     : {nam_str}\n"
             f"Vol>{vol_pct}% | Trend {trend_n}p\n"
             f"Trailing: {stop_pct}% | First stop: {first_stop_pct}%\n"
             f"Workers: 20 | Rate: 150 req/phut\n"
@@ -633,7 +685,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chat_id=chat_id, parse_mode="HTML",
         text=(
             f"<b>KET QUA SCAN TOAN BO</b>\n"
-            f"Nam BT: {CONFIG['year']} | Vol>{vol_pct}% | Trend {trend_n}p\n"
+            f"Nam BT: {nam_str} | Vol>{vol_pct}% | Trend {trend_n}p\n"
             f"Trailing: {stop_pct}% | First stop: {first_stop_pct}%\n"
             f"Tong ma: {len(df_r)} | Co GD: {n_gd} | Loi DL: {len(errors)}\n"
             f"  Loi: {n_loi} ({round(n_loi/n_gd*100,1)}%)\n"
@@ -691,10 +743,13 @@ async def post_init(app):
             f"  /config        : xem tham so\n"
             f"  /set vol/trend/stop\n"
             f"  /fiststop [%]  : fixed stop tu gia mua\n"
-            f"  /year [nam]    : nam bat dau\n\n"
+            f"  /year [nam]    : nam bat dau\n"
+            f"  /yearend [nam] : nam ket thuc (khong nhap = hien tai)\n\n"
             f"Mac dinh: Vol>{CONFIG['vol_pct']}% | Trend {CONFIG['trend_n']}p\n"
             f"Trailing: {CONFIG['stop_pct']}% | First stop: {CONFIG['first_stop_pct']}%\n"
-            f"Nam: {CONFIG['year']} | Von: 50tr/ma"
+            f"Nam: {CONFIG['year']}"
+            f"{' - ' + str(CONFIG['yearend']) if CONFIG['yearend'] else ' - hien tai'}"
+            f" | Von: 50tr/ma"
         )
     )
 
@@ -709,6 +764,7 @@ def main():
     app.add_handler(CommandHandler("set",       handle_set))
     app.add_handler(CommandHandler("fiststop",  handle_fiststop))
     app.add_handler(CommandHandler("year",      handle_year))
+    app.add_handler(CommandHandler("yearend",   handle_yearend))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(error_handler)
     print("Backtest Bot v5 dang chay...")
