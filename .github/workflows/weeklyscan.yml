@@ -26,24 +26,11 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Install vnstock-cli (with retry)
+      - name: Install vnstock-cli
         run: |
           wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
           chmod +x installer.run
-
-          MAX_ATTEMPTS=3
-          for i in $(seq 1 $MAX_ATTEMPTS); do
-            echo "=== Attempt $i/$MAX_ATTEMPTS ==="
-            if ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}" --venv-path "/home/runner/.venv"; then
-              echo "Installer succeeded on attempt $i"
-              exit 0
-            fi
-            echo "Installer failed on attempt $i, waiting 15s before retry..."
-            sleep 15
-          done
-
-          echo "Installer failed after $MAX_ATTEMPTS attempts"
-          exit 1
+          ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
 
       - name: Upload installer log (always, for debugging)
         if: always()
@@ -55,12 +42,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          /home/runner/.venv/bin/python -m pip install --upgrade pip
-          /home/runner/.venv/bin/python -m pip install \
+          uv pip install --python /home/runner/.venv/bin/python \
             pandas numpy requests "python-telegram-bot==20.7"
-
-      - name: Verify vnstock
-        run: |
           /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
           /home/runner/.venv/bin/python -c "from vnstock import Vnstock; print('vnstock OK')"
 
