@@ -26,16 +26,20 @@ jobs:
       - name: Install requests
         run: pip install requests
 
-      - name: Install dependencies
-        run: |
-          uv pip install --python /home/runner/.venv/bin/python \
-            pandas numpy requests "python-telegram-bot==20.7"
+      - name: Install system-level deps for installer verification
+        run: pip install pandas numpy
 
       - name: Install vnstock-cli
         run: |
           wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
           chmod +x installer.run
           ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
+
+      - name: Install dependencies
+        run: |
+          /home/runner/.venv/bin/python -m pip install --upgrade pip
+          /home/runner/.venv/bin/python -m pip install \
+            pandas numpy requests "python-telegram-bot==20.7"
 
       - name: Verify vnstock
         run: |
