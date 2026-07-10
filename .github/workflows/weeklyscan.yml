@@ -11,43 +11,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Cache vnstock device registration
         uses: actions/cache@v4
         with:
           path: |
             ~/.vnstock
             ~/.config/vnstock
-            /home/runner/.vnstock
-            /home/runner/.config/vnstock
           key: vnstock-device-${{ runner.os }}
           restore-keys: |
             vnstock-device-
 
-      - name: Install requests
-        run: pip install requests
-
-      - name: Install system-level deps for installer verification
-        run: pip install pandas numpy
-
-      - name: Install vnstock-cli
-        run: |
-          wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
-          chmod +x installer.run
-          ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
-
       - name: Install dependencies
         run: |
-          /home/runner/.venv/bin/python -m pip install --upgrade pip
-          /home/runner/.venv/bin/python -m pip install \
-            pandas numpy requests "python-telegram-bot==20.7"
+          python -m pip install --upgrade pip
+          pip install pandas numpy requests "python-telegram-bot==20.7" vnstock
 
       - name: Verify vnstock
+        env:
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
         run: |
-          /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
-          /home/runner/.venv/bin/python -c "from vnstock import Vnstock; print('vnstock OK')"
+          python -c "import telegram; print('telegram OK')"
+          python -c "from vnstock import Vnstock; print('vnstock OK')"
 
       - name: Run Weekly Scan
-        run: /home/runner/.venv/bin/python weeklyscan.py
+        run: python weeklyscan.py
         env:
           VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
