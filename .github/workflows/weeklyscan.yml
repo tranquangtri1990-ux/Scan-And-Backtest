@@ -82,6 +82,10 @@ jobs:
           path: /home/runner/.vnstock/vnstock_installer.log
           if-no-files-found: ignore
 
+      - name: Ensure uv is installed
+        run: |
+          command -v uv >/dev/null 2>&1 || pip install uv
+
       - name: Install dependencies
         run: |
           uv pip install --python /home/runner/.venv/bin/python "vnstock<=4.0.7"

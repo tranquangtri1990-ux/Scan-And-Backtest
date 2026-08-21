@@ -74,6 +74,10 @@ jobs:
           mkdir -p /home/runner/.vnstock
           touch /home/runner/.vnstock/.installed_ok
 
+      - name: Ensure uv is installed
+        run: |
+          command -v uv >/dev/null 2>&1 || pip install uv
+
       - name: Install dependencies
         run: |
           uv pip install --python /home/runner/.venv/bin/python "vnstock<=4.0.7"
