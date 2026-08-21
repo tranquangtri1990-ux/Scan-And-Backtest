@@ -17,6 +17,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cache vnstock device registration
+        id: vnstock-cache
         uses: actions/cache@v4
         with:
           path: |
@@ -24,18 +25,53 @@ jobs:
             ~/.config/vnstock
             /home/runner/.vnstock
             /home/runner/.config/vnstock
+            /home/runner/.venv
           key: vnstock-device-${{ runner.os }}
           restore-keys: |
             vnstock-device-
 
-      - name: Install requests
-        run: pip install requests
-
-      - name: Install vnstock-cli
+      - name: Install pip prerequisites (required by installer's own verification step)
         run: |
-          wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
-          chmod +x installer.run
-          ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
+          pip install --upgrade pip
+          pip install pandas numpy requests
+
+      - name: Check if vnstock-cli already installed (from cache)
+        id: check_vnstock
+        run: |
+          if [ -x "/home/runner/.venv/bin/python" ] && \
+             /home/runner/.venv/bin/python -c "from vnstock import Vnstock" 2>/dev/null && \
+             [ -f "/home/runner/.vnstock/.installed_ok" ]; then
+            echo "Đã có sẵn vnstock-cli từ cache, bỏ qua bước cài đặt/đăng ký thiết bị."
+            echo "cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cached=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install vnstock-cli (with retry + fallback)
+        if: steps.check_vnstock.outputs.cached != 'true'
+        run: |
+          set +e
+          success=false
+          for i in 1 2 3; do
+            echo "== Thử cài vnstock-cli lần $i =="
+            wget -q https://vnstocks.com/files/vnstock-cli-installer.run -O installer.run
+            chmod +x installer.run
+            ./installer.run -- --non-interactive --api-key "${{ secrets.VNSTOCK_API_KEY }}"
+            if [ $? -eq 0 ]; then
+              success=true
+              break
+            fi
+            echo "Lần $i thất bại, chờ 20s rồi thử lại..."
+            sleep 20
+          done
+
+          if [ "$success" != "true" ]; then
+            echo "== Installer .run thất bại 3 lần, chuyển sang cài thủ công qua pip =="
+            pip install --extra-index-url https://vnstocks.com/api/simple vnii vnstock_installer vnai --force
+          fi
+
+          mkdir -p /home/runner/.vnstock
+          touch /home/runner/.vnstock/.installed_ok
 
       - name: Install dependencies
         run: |
@@ -43,6 +79,14 @@ jobs:
             pandas numpy requests "python-telegram-bot==20.7"
           /home/runner/.venv/bin/python -c "import telegram; print('telegram OK')"
           /home/runner/.venv/bin/python -c "from vnstock import Vnstock; print('vnstock OK')"
+
+      - name: Upload installer log (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vnstock-installer-log-buildlist
+          path: /home/runner/.vnstock/vnstock_installer.log
+          if-no-files-found: ignore
 
       - name: Run Build List
         run: /home/runner/.venv/bin/python buildlist.py
