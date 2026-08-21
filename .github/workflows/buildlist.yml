@@ -30,6 +30,12 @@ jobs:
           restore-keys: |
             vnstock-device-
 
+      - name: Ensure venv exists with core deps (trước khi cài vnai/vnii)
+        run: |
+          python -m venv /home/runner/.venv || true
+          /home/runner/.venv/bin/pip install --upgrade pip
+          /home/runner/.venv/bin/pip install pandas numpy requests
+
       - name: Install pip prerequisites (required by installer's own verification step)
         run: |
           pip install --upgrade pip
