@@ -1,6 +1,6 @@
 # ============================================================
 # WEEKLY SCAN - Chạy độc lập, không polling
-# Chạy xong tự thoát, xuất CSV, thông báo Telegram
+# Chạy xong tự thoát, xuất TXT, thông báo Telegram
 # ============================================================
 
 import os
@@ -313,12 +313,12 @@ async def main():
                     f" — RSI {r['rsi']} / SMA {r['sma_rsi']}\n"
                 )
             if len(results) > 20:
-                msg += f"\n...và {len(results)-20} mã khác (xem file CSV)"
+                msg += f"\n...và {len(results)-20} mã khác (xem file kết quả)"
             await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
 
-            csv_name = f"ket_qua_weekly_{datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')}.csv"
-            pd.DataFrame(results).to_csv(csv_name, index=False)
-            await bot.send_message(chat_id=CHAT_ID, text=f'📁 Đã lưu CSV: {csv_name}')
+            txt_name = f"ket_qua_weekly_{datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')}.txt"
+            pd.DataFrame(results).to_csv(txt_name, index=False)
+            await bot.send_message(chat_id=CHAT_ID, text=f'📁 Đã lưu file: {txt_name}')
         else:
             await bot.send_message(
                 chat_id=CHAT_ID, parse_mode='HTML',
@@ -336,4 +336,4 @@ async def main():
         )
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    asyncio.run(main()
