@@ -300,25 +300,30 @@ async def main():
         logging.info('─' * 50)
 
         if results:
-            msg = (
+            header = (
                 f"<b>📊 KẾT QUẢ WEEKLY SCAN</b>\n\n"
                 f"✅ Thỏa điều kiện: <b>{len(results)}/{total}</b> mã\n"
                 f"⏱ {total_elapsed:.0f}s | {total/total_elapsed*60:.0f} mã/phút\n"
                 f"🕐 {now_vn()}\n\n"
             )
-            for i, r in enumerate(results[:20], start=1):
-                msg += f"{i}. {r['symbol']}\n"
-            if len(results) > 20:
-                msg += f"\n...và {len(results)-20} mã khác (xem file kết quả)"
-            await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
+            body = "".join(f"{i}. {r['symbol']}\n" for i, r in enumerate(results, start=1))
+            full_msg = header + body
 
-            txt_name = f"ket_qua_weekly_{datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')}.txt"
-            with open(txt_name, 'w', encoding='utf-8') as f:
-                for i, r in enumerate(results, start=1):
-                    f.write(f"{i}. {r['symbol']}\n")
-
-            with open(txt_name, 'rb') as f:
-                await bot.send_document(chat_id=CHAT_ID, document=f, filename=txt_name)
+            # Telegram giới hạn 4096 ký tự/tin nhắn — nếu vượt thì chia nhỏ, không dùng file
+            TELEGRAM_LIMIT = 4096
+            if len(full_msg) <= TELEGRAM_LIMIT:
+                await bot.send_message(chat_id=CHAT_ID, text=full_msg, parse_mode='HTML')
+            else:
+                await bot.send_message(chat_id=CHAT_ID, text=header, parse_mode='HTML')
+                lines = body.splitlines(keepends=True)
+                chunk = ""
+                for line in lines:
+                    if len(chunk) + len(line) > TELEGRAM_LIMIT:
+                        await bot.send_message(chat_id=CHAT_ID, text=chunk)
+                        chunk = ""
+                    chunk += line
+                if chunk:
+                    await bot.send_message(chat_id=CHAT_ID, text=chunk)
         else:
             await bot.send_message(
                 chat_id=CHAT_ID, parse_mode='HTML',
