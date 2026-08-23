@@ -306,19 +306,19 @@ async def main():
                 f"⏱ {total_elapsed:.0f}s | {total/total_elapsed*60:.0f} mã/phút\n"
                 f"🕐 {now_vn()}\n\n"
             )
-            for r in results[:20]:
-                msg += (
-                    f"🔹 <b>{r['symbol']}</b> (tuần {r['week']}) — {r['close']:,}đ"
-                    f" — Vol {r['volume']:,}"
-                    f" — RSI {r['rsi']} / SMA {r['sma_rsi']}\n"
-                )
+            for i, r in enumerate(results[:20], start=1):
+                msg += f"{i}. {r['symbol']}\n"
             if len(results) > 20:
                 msg += f"\n...và {len(results)-20} mã khác (xem file kết quả)"
             await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode='HTML')
 
             txt_name = f"ket_qua_weekly_{datetime.now(VN_TZ).strftime('%Y%m%d_%H%M')}.txt"
-            pd.DataFrame(results).to_csv(txt_name, index=False)
-            await bot.send_message(chat_id=CHAT_ID, text=f'📁 Đã lưu file: {txt_name}')
+            with open(txt_name, 'w', encoding='utf-8') as f:
+                for i, r in enumerate(results, start=1):
+                    f.write(f"{i}. {r['symbol']}\n")
+
+            with open(txt_name, 'rb') as f:
+                await bot.send_document(chat_id=CHAT_ID, document=f, filename=txt_name)
         else:
             await bot.send_message(
                 chat_id=CHAT_ID, parse_mode='HTML',
