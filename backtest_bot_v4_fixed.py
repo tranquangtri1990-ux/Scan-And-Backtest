@@ -620,7 +620,7 @@ async def handle_scanall(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Nam BT     : {nam_str}\n"
             f"Vol>{vol_pct}% | Trend {trend_n}p\n"
             f"Trailing: {stop_pct}% | First stop: {first_stop_pct}%\n"
-            f"Workers: 20 | Rate: 150 req/phut\n"
+            f"Workers: 20 | Rate: 300 req/phut\n"
             f"Cap nhat moi {PROGRESS_INTERVAL} ma..."
         )
     )
