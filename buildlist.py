@@ -57,7 +57,7 @@ now_vn = lambda: datetime.now(VN_TZ).strftime("%Y-%m-%d %H:%M")
 # RATE LIMITER
 # ============================================================
 class RateLimiter:
-    def __init__(self, max_calls=130, period=60.0):
+    def __init__(self, max_calls=300, period=60.0):
         self.max_calls, self.period = max_calls, period
         self._lock, self._calls = threading.Lock(), []
 
