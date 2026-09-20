@@ -36,7 +36,7 @@ now_vn = lambda: datetime.now(VN_TZ).strftime('%Y-%m-%d %H:%M')
 # RATE LIMITER
 # ============================================================
 class RateLimiter:
-    def __init__(self, max_calls=300, period=60.0):
+    def __init__(self, max_calls=280, period=60.0):
         self.max_calls, self.period = max_calls, period
         self._lock, self._calls = threading.Lock(), []
 
@@ -360,7 +360,7 @@ async def main():
                 f"  1. Volume tuần &gt; 500,000\n"
                 f"  2. RSI(14) cắt lên SMA(RSI,14)\n"
                 f"Workers    : 20 threads\n"
-                f"Rate limit : 300 req/phút\n\n"
+                f"Rate limit : 280 req/phút\n\n"
                 f"Cập nhật mỗi {WEEKLY_PROGRESS} mã...\n"
                 f"🕐 {now_vn()}"
             )
