@@ -36,7 +36,7 @@ now_vn = lambda: datetime.now(VN_TZ).strftime('%Y-%m-%d %H:%M')
 # RATE LIMITER
 # ============================================================
 class RateLimiter:
-    def __init__(self, max_calls=280, period=60.0):
+    def __init__(self, max_calls=300, period=60.0):
         self.max_calls, self.period = max_calls, period
         self._lock, self._calls = threading.Lock(), []
 
@@ -280,27 +280,35 @@ def _parse_dividend_events(events_df):
     return cash, stock
 
 def get_fundamentals(symbol):
-    """Trả về dict: pe (float|None), cash (year, amount_vnd)|None, stock (year, pct)|None."""
-    out = {'pe': None, 'cash': None, 'stock': None}
-    Vnstock = get_vnstock_class()
+    """Trả về dict: pe (float|None), cash (year, amount_vnd)|None, stock (year, pct)|None,
+    pe_err/div_err (str|None) — giữ lại thông báo lỗi thật để debug khi vnstock đổi API/schema."""
+    out = {'pe': None, 'cash': None, 'stock': None, 'pe_err': None, 'div_err': None}
 
     # --- P/E hiện tại: chỉ số tài chính, nguồn KBS (khuyến nghị) ---
+    # Dùng thẳng class Finance (đúng theo ví dụ chính thức trong docs vnstock),
+    # thay vì đi qua Vnstock().stock().finance vốn chưa chắc có submodule này.
     try:
         _rate_limiter.acquire()
-        stock = Vnstock(show_log=False).stock(symbol=symbol, source='KBS')
-        ratio = stock.finance.ratio(period='quarter')
+        from vnstock import Finance
+        ratio = Finance(symbol=symbol, source='KBS').ratio(period='quarter')
         out['pe'] = _latest_pe(ratio)
+        if out['pe'] is None:
+            out['pe_err'] = f"ratio() trả về {'rỗng' if ratio is None or ratio.empty else 'không có item_id=pe'}; cols={list(ratio.columns) if ratio is not None else None}"
     except Exception as e:
-        logging.warning('[fund/pe] %s: %s', symbol, str(e)[:100])
+        out['pe_err'] = f"{type(e).__name__}: {e}"
+        logging.warning('[fund/pe] %s: %s', symbol, str(e)[:200])
 
     # --- Cổ tức gần nhất (tiền mặt + cổ phiếu): sự kiện doanh nghiệp, nguồn TCBS ---
     try:
         _rate_limiter.acquire()
-        stock = Vnstock(show_log=False).stock(symbol=symbol, source='TCBS')
-        events = stock.company.events()
+        from vnstock import Company
+        events = Company(symbol=symbol, source='TCBS').events()
         out['cash'], out['stock'] = _parse_dividend_events(events)
+        if out['cash'] is None and out['stock'] is None:
+            out['div_err'] = f"events() trả về {'rỗng' if events is None or events.empty else 'không parse được dòng nào'}; cols={list(events.columns) if events is not None else None}"
     except Exception as e:
-        logging.warning('[fund/div] %s: %s', symbol, str(e)[:100])
+        out['div_err'] = f"{type(e).__name__}: {e}"
+        logging.warning('[fund/div] %s: %s', symbol, str(e)[:200])
 
     return out
 
@@ -360,7 +368,7 @@ async def main():
                 f"  1. Volume tuần &gt; 500,000\n"
                 f"  2. RSI(14) cắt lên SMA(RSI,14)\n"
                 f"Workers    : 20 threads\n"
-                f"Rate limit : 280 req/phút\n\n"
+                f"Rate limit : 300 req/phút\n\n"
                 f"Cập nhật mỗi {WEEKLY_PROGRESS} mã...\n"
                 f"🕐 {now_vn()}"
             )
@@ -464,6 +472,23 @@ async def main():
                         text="<pre>" + "\n".join(chunk_lines) + "</pre>",
                         parse_mode='HTML'
                     )
+
+            # Debug: nếu TOÀN BỘ mã đều không lấy được P/E hay cổ tức, gửi kèm 1 lỗi
+            # mẫu thật (plain text, không HTML để tránh vỡ format) thay vì im lặng.
+            any_pe = any(fund_data.get(r['symbol'], {}).get('pe') is not None for r in results)
+            any_div = any(fund_data.get(r['symbol'], {}).get('cash') or fund_data.get(r['symbol'], {}).get('stock')
+                          for r in results)
+            if not any_pe or not any_div:
+                sample = fund_data.get(results[0]['symbol'], {})
+                dbg = [f"⚠️ DEBUG (mã mẫu: {results[0]['symbol']})"]
+                if not any_pe:
+                    dbg.append(f"P/E lỗi: {sample.get('pe_err')}")
+                if not any_div:
+                    dbg.append(f"Cổ tức lỗi: {sample.get('div_err')}")
+                try:
+                    await bot.send_message(chat_id=CHAT_ID, text="\n".join(dbg)[:4000])
+                except Exception as e:
+                    logging.warning('[debug msg] %s', e)
         else:
             await bot.send_message(
                 chat_id=CHAT_ID, parse_mode='HTML',
