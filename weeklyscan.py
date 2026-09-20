@@ -36,7 +36,7 @@ now_vn = lambda: datetime.now(VN_TZ).strftime('%Y-%m-%d %H:%M')
 # RATE LIMITER
 # ============================================================
 class RateLimiter:
-    def __init__(self, max_calls=250, period=60.0):
+    def __init__(self, max_calls=300, period=60.0):
         self.max_calls, self.period = max_calls, period
         self._lock, self._calls = threading.Lock(), []
 
@@ -94,7 +94,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
         return []
 
 # ============================================================
-# LẤY DỮ LIỆU GIÁ
+# LẤY DỮ LIỆU
 # ============================================================
 def _fetch_df(symbol, source, start_date='2022-01-01'):
     Vnstock = get_vnstock_class()
@@ -206,176 +206,11 @@ def check_weekly_signal(symbol):
     return None
 
 # ============================================================
-# P/E & CỔ TỨC (chỉ gọi cho các mã đã thỏa điều kiện, sau khi quét xong)
-# ------------------------------------------------------------
-# P/E   : Finance(source='KBS').ratio() -> tidy format (item/item_id + cột kỳ),
-#         lấy dòng item_id == 'pe', cột kỳ mới nhất (cột không theo thứ tự
-#         thời gian nên phải tự sort lại theo tên, vd '2026-Q2' > '2025-Q4').
-# Cổ tức: Company(source='KBS').events() -> nguồn TCBS không còn là giá trị
-#         hợp lệ cho tham số source của Company (chỉ nhận 'VCI' hoặc 'KBS').
-#         events() KHÔNG có cột số tách sẵn, phải
-#         parse "tỷ lệ xx%" từ event_title (vd "Trả cổ tức bằng tiền tỷ lệ 20%",
-#         "Phát hành cổ phiếu trả cổ tức tỷ lệ 27.6%"). Đây là cách đáng tin cậy
-#         nhất theo mẫu tiêu đề thực tế của vnstock, nhưng vẫn nên chạy thử
-#         get_fundamentals('BCM') 1 lần và đối chiếu với tin tức cổ tức thật của
-#         mã đó trước khi tin tưởng hoàn toàn, vì công ty có thể đặt tiêu đề khác kiểu.
-# ============================================================
-PAR_VALUE = 10_000  # mệnh giá cổ phiếu VN, dùng để quy đổi % cổ tức tiền mặt ra VNĐ/cp
-
-def _first_col(df, candidates):
-    for c in candidates:
-        if c in df.columns:
-            return c
-    return None
-
-def _period_sort_key(col):
-    """'2026-Q2' -> (2026,2) | '2026' -> (2026,0) | '2025-Q4_1' (cột trùng tên bị pandas
-    đổi) -> (2025,4). Cột không parse được xếp cuối."""
-    m = re.match(r'(\d{4})-Q(\d)', str(col))
-    if m:
-        return (int(m.group(1)), int(m.group(2)))
-    m = re.match(r'(\d{4})$', str(col))
-    if m:
-        return (int(m.group(1)), 0)
-    return (-1, -1)
-
-def _find_ratio_row(ratio_df, item_id_candidates, item_text_candidates):
-    """Tìm dòng chỉ tiêu theo item_id (khớp chính xác, không phân biệt hoa thường)
-    trước, rồi thử khớp theo tên hiển thị (cột 'item') nếu không thấy."""
-    id_col = _first_col(ratio_df, ['item_id'])
-    if id_col:
-        mask = ratio_df[id_col].astype(str).str.lower().isin(item_id_candidates)
-        if mask.any():
-            return ratio_df[mask].iloc[0]
-    item_col = _first_col(ratio_df, ['item'])
-    if item_col:
-        low = ratio_df[item_col].astype(str).str.lower()
-        for txt in item_text_candidates:
-            mask = low.str.contains(txt, na=False, regex=False)
-            if mask.any():
-                return ratio_df[mask].iloc[0]
-    return None
-
-def _latest_pe(ratio_df):
-    """finance.ratio() (nguồn KBS) trả dạng tidy: cột item/item_id + các cột kỳ báo cáo.
-    Cột kỳ KHÔNG được sắp theo thứ tự thời gian (đã thấy thực tế:
-    ['2026-Q2','2025-Q4','2026-Q1','2025-Q4_1']) nên phải tự parse & sắp lại."""
-    if ratio_df is None or ratio_df.empty:
-        return None
-    row = _find_ratio_row(ratio_df, ['pe', 'p_e', 'price_to_earning', 'priceearning'], ['p/e'])
-    if row is None:
-        return None
-    period_cols = [c for c in ratio_df.columns if c not in ('item', 'item_id')]
-    period_cols = sorted(period_cols, key=_period_sort_key, reverse=True)
-    for c in period_cols:
-        val = row[c]
-        if pd.notna(val):
-            return float(val)
-    return None
-
-_PCT_RE = re.compile(r'tỷ lệ\s*([\d.,]+)\s*%', re.IGNORECASE)
-
-def _parse_dividend_events(events_df):
-    """company.events() (nguồn KBS) trả tiêu đề dạng câu, vd:
-    'VCB - Phát hành cổ phiếu trả cổ tức tỷ lệ 27.6%' (cổ phiếu)
-    'ABC - Trả cổ tức bằng tiền tỷ lệ 20%' (tiền mặt)
-    Hàm này parse tỷ lệ % + năm từ text, không có cột số sẵn nên đây là suy đoán
-    tốt nhất theo mẫu tiêu đề — nên kiểm tra lại nếu công ty đặt tiêu đề khác kiểu.
-    Trả về (cash, stock), mỗi cái là (year, value) hoặc None."""
-    if events_df is None or events_df.empty:
-        return None, None
-    df = events_df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-
-    title_col = _first_col(df, ['event_title', 'title'])
-    date_col = _first_col(df, ['record_date', 'public_date', 'exright_date'])
-    if title_col is None:
-        return None, None
-    if date_col:
-        df = df.sort_values(date_col, ascending=False)
-
-    cash = stock = None
-    for _, row in df.iterrows():
-        title = str(row.get(title_col, ''))
-        low = title.lower()
-        if 'cổ tức' not in low and 'dividend' not in low:
-            continue
-        m = _PCT_RE.search(title)
-        if not m:
-            continue
-        pct = float(m.group(1).replace(',', '.'))
-        year = str(row.get(date_col, ''))[:4] if date_col else ''
-        if 'cổ phiếu' in low and stock is None:
-            stock = (year, pct)
-        elif 'tiền' in low and cash is None:
-            cash = (year, round(pct / 100 * PAR_VALUE))
-        if cash and stock:
-            break
-    return cash, stock
-
-def get_fundamentals(symbol):
-    """Trả về dict: pe (float|None), cash (year, amount_vnd)|None, stock (year, pct)|None,
-    pe_err/div_err (str|None) — giữ lại thông báo lỗi thật để debug khi vnstock đổi API/schema."""
-    out = {'pe': None, 'cash': None, 'stock': None, 'pe_err': None, 'div_err': None}
-
-    # --- P/E hiện tại: chỉ số tài chính, nguồn KBS (khuyến nghị) ---
-    # Dùng thẳng class Finance (đúng theo ví dụ chính thức trong docs vnstock),
-    # thay vì đi qua Vnstock().stock().finance vốn chưa chắc có submodule này.
-    try:
-        _rate_limiter.acquire()
-        from vnstock import Finance
-        ratio = Finance(symbol=symbol, source='KBS').ratio(period='quarter')
-        out['pe'] = _latest_pe(ratio)
-        if out['pe'] is None:
-            if ratio is None or ratio.empty:
-                out['pe_err'] = "ratio() trả về rỗng"
-            else:
-                id_col = _first_col(ratio, ['item_id'])
-                ids = sorted(ratio[id_col].astype(str).unique().tolist()) if id_col else []
-                out['pe_err'] = f"không tìm thấy dòng P/E; item_id thực tế: {ids}"
-    except Exception as e:
-        out['pe_err'] = f"{type(e).__name__}: {e}"
-        logging.warning('[fund/pe] %s: %s', symbol, str(e)[:200])
-
-    # --- Cổ tức gần nhất (tiền mặt + cổ phiếu): sự kiện doanh nghiệp, nguồn KBS ---
-    try:
-        _rate_limiter.acquire()
-        from vnstock import Company
-        events = Company(symbol=symbol, source='KBS').events()
-        out['cash'], out['stock'] = _parse_dividend_events(events)
-        if out['cash'] is None and out['stock'] is None:
-            out['div_err'] = f"events() trả về {'rỗng' if events is None or events.empty else 'không parse được dòng nào'}; cols={list(events.columns) if events is not None else None}"
-    except Exception as e:
-        out['div_err'] = f"{type(e).__name__}: {e}"
-        logging.warning('[fund/div] %s: %s', symbol, str(e)[:200])
-
-    return out
-
-def format_result_line(idx, r, fund):
-    sym = r['symbol']
-    pe_str = f"{fund['pe']:.1f}" if fund.get('pe') is not None else ''
-    cash_str = ''
-    if fund.get('cash'):
-        year, amount = fund['cash']
-        cash_str = f"{year} {amount:,}".replace(',', '.') + "/cp"
-    stock_str = ''
-    if fund.get('stock'):
-        year, pct = fund['stock']
-        stock_str = f"{year} {pct:.0f}%"
-
-    line = f"{idx}. {sym:<8}P/E: {pe_str:<8}"
-    if cash_str:
-        line += f"CTTM: {cash_str:<16}"
-    if stock_str:
-        line += f"CTCP: {stock_str}"
-    return line.rstrip()
-
-# ============================================================
 # POOL
 # ============================================================
-def run_pool_sync(fn, items, max_workers=20):
+def run_pool_sync(fn, symbols, max_workers=20):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fn, item): item for item in items}
+        futures = {executor.submit(fn, sym): sym for sym in symbols}
         for future in as_completed(futures):
             try:
                 future.result()
@@ -407,7 +242,7 @@ async def main():
                 f"  1. Volume tuần &gt; 500,000\n"
                 f"  2. RSI(14) cắt lên SMA(RSI,14)\n"
                 f"Workers    : 20 threads\n"
-                f"Rate limit : 250 req/phút\n\n"
+                f"Rate limit : 300 req/phút\n\n"
                 f"Cập nhật mỗi {WEEKLY_PROGRESS} mã...\n"
                 f"🕐 {now_vn()}"
             )
@@ -471,21 +306,8 @@ async def main():
                 f"⏱ {total_elapsed:.0f}s | {total/total_elapsed*60:.0f} mã/phút\n"
                 f"🕐 {now_vn()}\n\n"
             )
-
-            # Lấy P/E + cổ tức cho riêng các mã đã lọt điều kiện (ít mã → ít request)
-            fund_start = time.time()
-            fund_data = {}
-
-            def fetch_fund(r):
-                fund_data[r['symbol']] = get_fundamentals(r['symbol'])
-
-            run_pool_sync(fetch_fund, results, max_workers=10)
-            logging.info('[fund] Lấy P/E + cổ tức cho %d mã: %.0fs', len(results), time.time() - fund_start)
-
-            lines = [format_result_line(i, r, fund_data.get(r['symbol'], {}))
-                     for i, r in enumerate(results, start=1)]
-            body = "\n".join(lines)
-            full_msg = header + "<pre>" + body + "</pre>"
+            body = "".join(f"{i}. {r['symbol']}\n" for i, r in enumerate(results, start=1))
+            full_msg = header + body
 
             # Telegram giới hạn 4096 ký tự/tin nhắn — nếu vượt thì chia nhỏ, không dùng file
             TELEGRAM_LIMIT = 4096
@@ -493,41 +315,15 @@ async def main():
                 await bot.send_message(chat_id=CHAT_ID, text=full_msg, parse_mode='HTML')
             else:
                 await bot.send_message(chat_id=CHAT_ID, text=header, parse_mode='HTML')
-                chunk_lines, chunk_len = [], 0
-                budget = TELEGRAM_LIMIT - len("<pre></pre>") - 10
+                lines = body.splitlines(keepends=True)
+                chunk = ""
                 for line in lines:
-                    if chunk_len + len(line) + 1 > budget:
-                        await bot.send_message(
-                            chat_id=CHAT_ID,
-                            text="<pre>" + "\n".join(chunk_lines) + "</pre>",
-                            parse_mode='HTML'
-                        )
-                        chunk_lines, chunk_len = [], 0
-                    chunk_lines.append(line)
-                    chunk_len += len(line) + 1
-                if chunk_lines:
-                    await bot.send_message(
-                        chat_id=CHAT_ID,
-                        text="<pre>" + "\n".join(chunk_lines) + "</pre>",
-                        parse_mode='HTML'
-                    )
-
-            # Debug: nếu TOÀN BỘ mã đều không lấy được P/E hay cổ tức, gửi kèm 1 lỗi
-            # mẫu thật (plain text, không HTML để tránh vỡ format) thay vì im lặng.
-            any_pe = any(fund_data.get(r['symbol'], {}).get('pe') is not None for r in results)
-            any_div = any(fund_data.get(r['symbol'], {}).get('cash') or fund_data.get(r['symbol'], {}).get('stock')
-                          for r in results)
-            if not any_pe or not any_div:
-                sample = fund_data.get(results[0]['symbol'], {})
-                dbg = [f"⚠️ DEBUG (mã mẫu: {results[0]['symbol']})"]
-                if not any_pe:
-                    dbg.append(f"P/E lỗi: {sample.get('pe_err')}")
-                if not any_div:
-                    dbg.append(f"Cổ tức lỗi: {sample.get('div_err')}")
-                try:
-                    await bot.send_message(chat_id=CHAT_ID, text="\n".join(dbg)[:4000])
-                except Exception as e:
-                    logging.warning('[debug msg] %s', e)
+                    if len(chunk) + len(line) > TELEGRAM_LIMIT:
+                        await bot.send_message(chat_id=CHAT_ID, text=chunk)
+                        chunk = ""
+                    chunk += line
+                if chunk:
+                    await bot.send_message(chat_id=CHAT_ID, text=chunk)
         else:
             await bot.send_message(
                 chat_id=CHAT_ID, parse_mode='HTML',
