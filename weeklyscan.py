@@ -94,7 +94,7 @@ def get_all_symbols(filename='vn_stocks_full.txt'):
         return []
 
 # ============================================================
-# LẤY DỮ LIỆU
+# LẤY DỮ LIỆU GIÁ
 # ============================================================
 def _fetch_df(symbol, source, start_date='2022-01-01'):
     Vnstock = get_vnstock_class()
@@ -206,11 +206,103 @@ def check_weekly_signal(symbol):
     return None
 
 # ============================================================
+# P/E & CỔ TỨC (chỉ gọi cho các mã đã thỏa điều kiện, sau khi quét xong)
+# ------------------------------------------------------------
+# LƯU Ý: tên cột trả về từ vnstock có thể khác nhau tùy phiên bản/nguồn
+# dữ liệu. Hàm dưới đây thử nhiều tên cột phổ biến và bỏ trống nếu
+# không tìm thấy, thay vì làm crash cả job. Nếu output không đúng ý,
+# chạy thử get_fundamentals('BCM') riêng và xem cột thực tế trả về
+# để chỉnh lại danh sách tên cột bên dưới.
+# ============================================================
+PAR_VALUE = 10_000  # mệnh giá cổ phiếu VN, dùng để quy đổi % cổ tức tiền mặt ra VNĐ/cp
+
+def _first_col(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def get_fundamentals(symbol):
+    """Trả về dict: pe (float|None), cash (year, amount_vnd)|None, stock (year, pct)|None."""
+    out = {'pe': None, 'cash': None, 'stock': None}
+    Vnstock = get_vnstock_class()
+
+    # --- P/E hiện tại: chỉ số tài chính, nguồn VCI ---
+    try:
+        _rate_limiter.acquire()
+        stock = Vnstock(show_log=False).stock(symbol=symbol, source='VCI')
+        ratio = stock.finance.ratio(period='quarter', lang='en', dropna=True)
+        if ratio is not None and not ratio.empty:
+            pe_col = None
+            for c in ratio.columns:
+                label = str(c[-1] if isinstance(c, tuple) else c).strip().lower()
+                if label in ('p/e', 'pe', 'price to earning'):
+                    pe_col = c
+                    break
+            if pe_col is not None:
+                val = ratio[pe_col].iloc[0]
+                if pd.notna(val):
+                    out['pe'] = float(val)
+    except Exception as e:
+        logging.warning('[fund/pe] %s: %s', symbol, str(e)[:100])
+
+    # --- Cổ tức gần nhất (tiền mặt + cổ phiếu), nguồn TCBS ---
+    try:
+        _rate_limiter.acquire()
+        stock = Vnstock(show_log=False).stock(symbol=symbol, source='TCBS')
+        div = stock.company.dividends()
+        if div is not None and not div.empty:
+            div.columns = [str(c).strip().lower() for c in div.columns]
+            date_col = _first_col(div, ['exercise_date', 'exercisedate', 'cash_year', 'cashyear', 'year'])
+            if date_col:
+                div = div.sort_values(date_col, ascending=False)
+            method_col = _first_col(div, ['issue_method', 'issuemethod'])
+            cash_pct_col = _first_col(div, ['cash_dividend_percentage', 'cashdividendpercentage'])
+            stock_pct_col = _first_col(div, ['stock_dividend_percentage', 'stockdividendpercentage',
+                                              'issue_ratio', 'ratio'])
+            for _, row in div.iterrows():
+                method = str(row.get(method_col, '')).lower() if method_col else ''
+                year = str(row.get(date_col, ''))[:4] if date_col else ''
+                if out['cash'] is None and cash_pct_col and 'cash' in method:
+                    pct = row.get(cash_pct_col)
+                    if pd.notna(pct):
+                        out['cash'] = (year, round(float(pct) / 100 * PAR_VALUE))
+                elif out['stock'] is None and stock_pct_col and ('stock' in method or 'share' in method):
+                    pct = row.get(stock_pct_col)
+                    if pd.notna(pct):
+                        out['stock'] = (year, float(pct) * (100 if float(pct) <= 1 else 1))
+                if out['cash'] and out['stock']:
+                    break
+    except Exception as e:
+        logging.warning('[fund/div] %s: %s', symbol, str(e)[:100])
+
+    return out
+
+def format_result_line(idx, r, fund):
+    sym = r['symbol']
+    pe_str = f"{fund['pe']:.1f}" if fund.get('pe') is not None else ''
+    cash_str = ''
+    if fund.get('cash'):
+        year, amount = fund['cash']
+        cash_str = f"{year} {amount:,}".replace(',', '.') + "/cp"
+    stock_str = ''
+    if fund.get('stock'):
+        year, pct = fund['stock']
+        stock_str = f"{year} {pct:.0f}%"
+
+    line = f"{idx}. {sym:<8}P/E: {pe_str:<8}"
+    if cash_str:
+        line += f"CTTM: {cash_str:<16}"
+    if stock_str:
+        line += f"CTCP: {stock_str}"
+    return line.rstrip()
+
+# ============================================================
 # POOL
 # ============================================================
-def run_pool_sync(fn, symbols, max_workers=20):
+def run_pool_sync(fn, items, max_workers=20):
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(fn, sym): sym for sym in symbols}
+        futures = {executor.submit(fn, item): item for item in items}
         for future in as_completed(futures):
             try:
                 future.result()
@@ -306,8 +398,21 @@ async def main():
                 f"⏱ {total_elapsed:.0f}s | {total/total_elapsed*60:.0f} mã/phút\n"
                 f"🕐 {now_vn()}\n\n"
             )
-            body = "".join(f"{i}. {r['symbol']}\n" for i, r in enumerate(results, start=1))
-            full_msg = header + body
+
+            # Lấy P/E + cổ tức cho riêng các mã đã lọt điều kiện (ít mã → ít request)
+            fund_start = time.time()
+            fund_data = {}
+
+            def fetch_fund(r):
+                fund_data[r['symbol']] = get_fundamentals(r['symbol'])
+
+            run_pool_sync(fetch_fund, results, max_workers=10)
+            logging.info('[fund] Lấy P/E + cổ tức cho %d mã: %.0fs', len(results), time.time() - fund_start)
+
+            lines = [format_result_line(i, r, fund_data.get(r['symbol'], {}))
+                     for i, r in enumerate(results, start=1)]
+            body = "\n".join(lines)
+            full_msg = header + "<pre>" + body + "</pre>"
 
             # Telegram giới hạn 4096 ký tự/tin nhắn — nếu vượt thì chia nhỏ, không dùng file
             TELEGRAM_LIMIT = 4096
@@ -315,15 +420,24 @@ async def main():
                 await bot.send_message(chat_id=CHAT_ID, text=full_msg, parse_mode='HTML')
             else:
                 await bot.send_message(chat_id=CHAT_ID, text=header, parse_mode='HTML')
-                lines = body.splitlines(keepends=True)
-                chunk = ""
+                chunk_lines, chunk_len = [], 0
+                budget = TELEGRAM_LIMIT - len("<pre></pre>") - 10
                 for line in lines:
-                    if len(chunk) + len(line) > TELEGRAM_LIMIT:
-                        await bot.send_message(chat_id=CHAT_ID, text=chunk)
-                        chunk = ""
-                    chunk += line
-                if chunk:
-                    await bot.send_message(chat_id=CHAT_ID, text=chunk)
+                    if chunk_len + len(line) + 1 > budget:
+                        await bot.send_message(
+                            chat_id=CHAT_ID,
+                            text="<pre>" + "\n".join(chunk_lines) + "</pre>",
+                            parse_mode='HTML'
+                        )
+                        chunk_lines, chunk_len = [], 0
+                    chunk_lines.append(line)
+                    chunk_len += len(line) + 1
+                if chunk_lines:
+                    await bot.send_message(
+                        chat_id=CHAT_ID,
+                        text="<pre>" + "\n".join(chunk_lines) + "</pre>",
+                        parse_mode='HTML'
+                    )
         else:
             await bot.send_message(
                 chat_id=CHAT_ID, parse_mode='HTML',
