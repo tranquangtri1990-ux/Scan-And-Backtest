@@ -208,11 +208,14 @@ def check_weekly_signal(symbol):
 # ============================================================
 # P/E & CỔ TỨC (chỉ gọi cho các mã đã thỏa điều kiện, sau khi quét xong)
 # ------------------------------------------------------------
-# LƯU Ý: tên cột trả về từ vnstock có thể khác nhau tùy phiên bản/nguồn
-# dữ liệu. Hàm dưới đây thử nhiều tên cột phổ biến và bỏ trống nếu
-# không tìm thấy, thay vì làm crash cả job. Nếu output không đúng ý,
-# chạy thử get_fundamentals('BCM') riêng và xem cột thực tế trả về
-# để chỉnh lại danh sách tên cột bên dưới.
+# P/E   : Finance(source='KBS').ratio() -> tidy format (item/item_id + cột kỳ),
+#         lấy dòng item_id == 'pe', cột kỳ mới nhất.
+# Cổ tức: Company(source='TCBS').events() -> KHÔNG có cột số tách sẵn, phải
+#         parse "tỷ lệ xx%" từ event_title (vd "Trả cổ tức bằng tiền tỷ lệ 20%",
+#         "Phát hành cổ phiếu trả cổ tức tỷ lệ 27.6%"). Đây là cách đáng tin cậy
+#         nhất theo mẫu tiêu đề thực tế của vnstock, nhưng vẫn nên chạy thử
+#         get_fundamentals('BCM') 1 lần và đối chiếu với tin tức cổ tức thật của
+#         mã đó trước khi tin tưởng hoàn toàn, vì công ty có thể đặt tiêu đề khác kiểu.
 # ============================================================
 PAR_VALUE = 10_000  # mệnh giá cổ phiếu VN, dùng để quy đổi % cổ tức tiền mặt ra VNĐ/cp
 
@@ -222,57 +225,80 @@ def _first_col(df, candidates):
             return c
     return None
 
+def _latest_pe(ratio_df):
+    """finance.ratio() (nguồn KBS) trả dạng tidy: cột item/item_id + các cột kỳ báo cáo
+    (vd '2025-Q4','2025-Q3',...), kỳ mới nhất nằm ở cột đầu tiên sau item_id."""
+    if ratio_df is None or ratio_df.empty or 'item_id' not in ratio_df.columns:
+        return None
+    row = ratio_df[ratio_df['item_id'].astype(str).str.lower() == 'pe']
+    if row.empty:
+        return None
+    period_cols = [c for c in ratio_df.columns if c not in ('item', 'item_id')]
+    if not period_cols:
+        return None
+    val = row.iloc[0][period_cols[0]]
+    return float(val) if pd.notna(val) else None
+
+_PCT_RE = re.compile(r'tỷ lệ\s*([\d.,]+)\s*%', re.IGNORECASE)
+
+def _parse_dividend_events(events_df):
+    """company.events() (nguồn TCBS) trả tiêu đề dạng câu, vd:
+    'VCB - Phát hành cổ phiếu trả cổ tức tỷ lệ 27.6%' (cổ phiếu)
+    'ABC - Trả cổ tức bằng tiền tỷ lệ 20%' (tiền mặt)
+    Hàm này parse tỷ lệ % + năm từ text, không có cột số sẵn nên đây là suy đoán
+    tốt nhất theo mẫu tiêu đề — nên kiểm tra lại nếu công ty đặt tiêu đề khác kiểu.
+    Trả về (cash, stock), mỗi cái là (year, value) hoặc None."""
+    if events_df is None or events_df.empty:
+        return None, None
+    df = events_df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    title_col = _first_col(df, ['event_title', 'title'])
+    date_col = _first_col(df, ['record_date', 'public_date', 'exright_date'])
+    if title_col is None:
+        return None, None
+    if date_col:
+        df = df.sort_values(date_col, ascending=False)
+
+    cash = stock = None
+    for _, row in df.iterrows():
+        title = str(row.get(title_col, ''))
+        low = title.lower()
+        if 'cổ tức' not in low and 'dividend' not in low:
+            continue
+        m = _PCT_RE.search(title)
+        if not m:
+            continue
+        pct = float(m.group(1).replace(',', '.'))
+        year = str(row.get(date_col, ''))[:4] if date_col else ''
+        if 'cổ phiếu' in low and stock is None:
+            stock = (year, pct)
+        elif 'tiền' in low and cash is None:
+            cash = (year, round(pct / 100 * PAR_VALUE))
+        if cash and stock:
+            break
+    return cash, stock
+
 def get_fundamentals(symbol):
     """Trả về dict: pe (float|None), cash (year, amount_vnd)|None, stock (year, pct)|None."""
     out = {'pe': None, 'cash': None, 'stock': None}
     Vnstock = get_vnstock_class()
 
-    # --- P/E hiện tại: chỉ số tài chính, nguồn VCI ---
+    # --- P/E hiện tại: chỉ số tài chính, nguồn KBS (khuyến nghị) ---
     try:
         _rate_limiter.acquire()
-        stock = Vnstock(show_log=False).stock(symbol=symbol, source='VCI')
-        ratio = stock.finance.ratio(period='quarter', lang='en', dropna=True)
-        if ratio is not None and not ratio.empty:
-            pe_col = None
-            for c in ratio.columns:
-                label = str(c[-1] if isinstance(c, tuple) else c).strip().lower()
-                if label in ('p/e', 'pe', 'price to earning'):
-                    pe_col = c
-                    break
-            if pe_col is not None:
-                val = ratio[pe_col].iloc[0]
-                if pd.notna(val):
-                    out['pe'] = float(val)
+        stock = Vnstock(show_log=False).stock(symbol=symbol, source='KBS')
+        ratio = stock.finance.ratio(period='quarter')
+        out['pe'] = _latest_pe(ratio)
     except Exception as e:
         logging.warning('[fund/pe] %s: %s', symbol, str(e)[:100])
 
-    # --- Cổ tức gần nhất (tiền mặt + cổ phiếu), nguồn TCBS ---
+    # --- Cổ tức gần nhất (tiền mặt + cổ phiếu): sự kiện doanh nghiệp, nguồn TCBS ---
     try:
         _rate_limiter.acquire()
         stock = Vnstock(show_log=False).stock(symbol=symbol, source='TCBS')
-        div = stock.company.dividends()
-        if div is not None and not div.empty:
-            div.columns = [str(c).strip().lower() for c in div.columns]
-            date_col = _first_col(div, ['exercise_date', 'exercisedate', 'cash_year', 'cashyear', 'year'])
-            if date_col:
-                div = div.sort_values(date_col, ascending=False)
-            method_col = _first_col(div, ['issue_method', 'issuemethod'])
-            cash_pct_col = _first_col(div, ['cash_dividend_percentage', 'cashdividendpercentage'])
-            stock_pct_col = _first_col(div, ['stock_dividend_percentage', 'stockdividendpercentage',
-                                              'issue_ratio', 'ratio'])
-            for _, row in div.iterrows():
-                method = str(row.get(method_col, '')).lower() if method_col else ''
-                year = str(row.get(date_col, ''))[:4] if date_col else ''
-                if out['cash'] is None and cash_pct_col and 'cash' in method:
-                    pct = row.get(cash_pct_col)
-                    if pd.notna(pct):
-                        out['cash'] = (year, round(float(pct) / 100 * PAR_VALUE))
-                elif out['stock'] is None and stock_pct_col and ('stock' in method or 'share' in method):
-                    pct = row.get(stock_pct_col)
-                    if pd.notna(pct):
-                        out['stock'] = (year, float(pct) * (100 if float(pct) <= 1 else 1))
-                if out['cash'] and out['stock']:
-                    break
+        events = stock.company.events()
+        out['cash'], out['stock'] = _parse_dividend_events(events)
     except Exception as e:
         logging.warning('[fund/div] %s: %s', symbol, str(e)[:100])
 
