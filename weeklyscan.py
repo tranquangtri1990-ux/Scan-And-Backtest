@@ -209,8 +209,11 @@ def check_weekly_signal(symbol):
 # P/E & CỔ TỨC (chỉ gọi cho các mã đã thỏa điều kiện, sau khi quét xong)
 # ------------------------------------------------------------
 # P/E   : Finance(source='KBS').ratio() -> tidy format (item/item_id + cột kỳ),
-#         lấy dòng item_id == 'pe', cột kỳ mới nhất.
-# Cổ tức: Company(source='TCBS').events() -> KHÔNG có cột số tách sẵn, phải
+#         lấy dòng item_id == 'pe', cột kỳ mới nhất (cột không theo thứ tự
+#         thời gian nên phải tự sort lại theo tên, vd '2026-Q2' > '2025-Q4').
+# Cổ tức: Company(source='KBS').events() -> nguồn TCBS không còn là giá trị
+#         hợp lệ cho tham số source của Company (chỉ nhận 'VCI' hoặc 'KBS').
+#         events() KHÔNG có cột số tách sẵn, phải
 #         parse "tỷ lệ xx%" từ event_title (vd "Trả cổ tức bằng tiền tỷ lệ 20%",
 #         "Phát hành cổ phiếu trả cổ tức tỷ lệ 27.6%"). Đây là cách đáng tin cậy
 #         nhất theo mẫu tiêu đề thực tế của vnstock, nhưng vẫn nên chạy thử
@@ -225,24 +228,55 @@ def _first_col(df, candidates):
             return c
     return None
 
+def _period_sort_key(col):
+    """'2026-Q2' -> (2026,2) | '2026' -> (2026,0) | '2025-Q4_1' (cột trùng tên bị pandas
+    đổi) -> (2025,4). Cột không parse được xếp cuối."""
+    m = re.match(r'(\d{4})-Q(\d)', str(col))
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    m = re.match(r'(\d{4})$', str(col))
+    if m:
+        return (int(m.group(1)), 0)
+    return (-1, -1)
+
+def _find_ratio_row(ratio_df, item_id_candidates, item_text_candidates):
+    """Tìm dòng chỉ tiêu theo item_id (khớp chính xác, không phân biệt hoa thường)
+    trước, rồi thử khớp theo tên hiển thị (cột 'item') nếu không thấy."""
+    id_col = _first_col(ratio_df, ['item_id'])
+    if id_col:
+        mask = ratio_df[id_col].astype(str).str.lower().isin(item_id_candidates)
+        if mask.any():
+            return ratio_df[mask].iloc[0]
+    item_col = _first_col(ratio_df, ['item'])
+    if item_col:
+        low = ratio_df[item_col].astype(str).str.lower()
+        for txt in item_text_candidates:
+            mask = low.str.contains(txt, na=False, regex=False)
+            if mask.any():
+                return ratio_df[mask].iloc[0]
+    return None
+
 def _latest_pe(ratio_df):
-    """finance.ratio() (nguồn KBS) trả dạng tidy: cột item/item_id + các cột kỳ báo cáo
-    (vd '2025-Q4','2025-Q3',...), kỳ mới nhất nằm ở cột đầu tiên sau item_id."""
-    if ratio_df is None or ratio_df.empty or 'item_id' not in ratio_df.columns:
+    """finance.ratio() (nguồn KBS) trả dạng tidy: cột item/item_id + các cột kỳ báo cáo.
+    Cột kỳ KHÔNG được sắp theo thứ tự thời gian (đã thấy thực tế:
+    ['2026-Q2','2025-Q4','2026-Q1','2025-Q4_1']) nên phải tự parse & sắp lại."""
+    if ratio_df is None or ratio_df.empty:
         return None
-    row = ratio_df[ratio_df['item_id'].astype(str).str.lower() == 'pe']
-    if row.empty:
+    row = _find_ratio_row(ratio_df, ['pe', 'p_e', 'price_to_earning', 'priceearning'], ['p/e'])
+    if row is None:
         return None
     period_cols = [c for c in ratio_df.columns if c not in ('item', 'item_id')]
-    if not period_cols:
-        return None
-    val = row.iloc[0][period_cols[0]]
-    return float(val) if pd.notna(val) else None
+    period_cols = sorted(period_cols, key=_period_sort_key, reverse=True)
+    for c in period_cols:
+        val = row[c]
+        if pd.notna(val):
+            return float(val)
+    return None
 
 _PCT_RE = re.compile(r'tỷ lệ\s*([\d.,]+)\s*%', re.IGNORECASE)
 
 def _parse_dividend_events(events_df):
-    """company.events() (nguồn TCBS) trả tiêu đề dạng câu, vd:
+    """company.events() (nguồn KBS) trả tiêu đề dạng câu, vd:
     'VCB - Phát hành cổ phiếu trả cổ tức tỷ lệ 27.6%' (cổ phiếu)
     'ABC - Trả cổ tức bằng tiền tỷ lệ 20%' (tiền mặt)
     Hàm này parse tỷ lệ % + năm từ text, không có cột số sẵn nên đây là suy đoán
@@ -293,16 +327,21 @@ def get_fundamentals(symbol):
         ratio = Finance(symbol=symbol, source='KBS').ratio(period='quarter')
         out['pe'] = _latest_pe(ratio)
         if out['pe'] is None:
-            out['pe_err'] = f"ratio() trả về {'rỗng' if ratio is None or ratio.empty else 'không có item_id=pe'}; cols={list(ratio.columns) if ratio is not None else None}"
+            if ratio is None or ratio.empty:
+                out['pe_err'] = "ratio() trả về rỗng"
+            else:
+                id_col = _first_col(ratio, ['item_id'])
+                ids = sorted(ratio[id_col].astype(str).unique().tolist()) if id_col else []
+                out['pe_err'] = f"không tìm thấy dòng P/E; item_id thực tế: {ids}"
     except Exception as e:
         out['pe_err'] = f"{type(e).__name__}: {e}"
         logging.warning('[fund/pe] %s: %s', symbol, str(e)[:200])
 
-    # --- Cổ tức gần nhất (tiền mặt + cổ phiếu): sự kiện doanh nghiệp, nguồn TCBS ---
+    # --- Cổ tức gần nhất (tiền mặt + cổ phiếu): sự kiện doanh nghiệp, nguồn KBS ---
     try:
         _rate_limiter.acquire()
         from vnstock import Company
-        events = Company(symbol=symbol, source='TCBS').events()
+        events = Company(symbol=symbol, source='KBS').events()
         out['cash'], out['stock'] = _parse_dividend_events(events)
         if out['cash'] is None and out['stock'] is None:
             out['div_err'] = f"events() trả về {'rỗng' if events is None or events.empty else 'không parse được dòng nào'}; cols={list(events.columns) if events is not None else None}"
