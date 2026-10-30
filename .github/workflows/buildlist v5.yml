@@ -1,0 +1,67 @@
+name: Build Symbol List v5
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  buildlist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Chỉ cache thông tin đăng nhập/thiết bị của vnstock, KHÔNG cache venv
+      # (tránh khôi phục lại bản vnstock 4.x cũ). Đổi key khi cần làm mới cache.
+      - name: Cache vnstock auth/device
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.vnstock
+            ~/.config/vnstock
+          key: vnstock5-auth-${{ runner.os }}-v1
+          restore-keys: |
+            vnstock5-auth-${{ runner.os }}-
+
+      - name: Install dependencies (vnstock 5 từ kho vnstocks.com)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -U pip
+          .venv/bin/pip install -U --extra-index-url https://vnstocks.com/api/packages "vnstock>=5.0.5"
+          .venv/bin/pip install pandas numpy requests "python-telegram-bot==20.7"
+          .venv/bin/vnstock version
+          .venv/bin/python -c "import telegram; print('telegram OK')"
+          .venv/bin/python -c "from vnstock import Market; print('vnstock 5 OK')"
+
+      - name: Login vnstock
+        run: |
+          .venv/bin/python -c "import os, vnstock; vnstock.login(os.environ['VNSTOCK_API_KEY']); print(vnstock.status())"
+        env:
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+
+      - name: Run Build List
+        run: .venv/bin/python buildlist_v5.py
+        env:
+          VNSTOCK_API_KEY: ${{ secrets.VNSTOCK_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Commit vn_stocks_full.txt
+        if: always()
+        run: |
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@github.com'
+          git add vn_stocks_full.txt || true
+          git diff --cached --quiet && echo 'No changes' && exit 0
+          git commit -m 'Auto update vn_stocks_full.txt'
+          git pull --rebase origin main
+          git push origin main
