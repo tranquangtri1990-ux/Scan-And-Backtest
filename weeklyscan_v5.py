@@ -138,7 +138,7 @@ def _fetch_df(symbol, source, start_date='2022-01-01'):
 def get_data(symbol, start_date='2022-01-01'):
     last_errors = []
     # vnstock 5: nguồn msn đã bỏ; mặc định VCI, dự phòng KBS
-    for source in ('VCI', 'KBS'):
+    for source in ('KBS', 'VCI'):
         try:
             df = _fetch_df(symbol, source, start_date)
             if df is not None:
