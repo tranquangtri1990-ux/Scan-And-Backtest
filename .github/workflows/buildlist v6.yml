@@ -1,0 +1,58 @@
+name: Build Symbol List v6
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Chỉ cho chạy 1 bot tại 1 thời điểm (tránh xung đột getUpdates của Telegram)
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # vnstock 6: cài từ kho vnstocks.com, luôn ghi rõ dải phiên bản.
+      # Không cần vnstock.login / VNSTOCK_API_KEY cho Market & Reference.
+      - name: Install dependencies (vnstock 6)
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -U pip
+          .venv/bin/pip install -U --extra-index-url https://vnstocks.com/api/packages "vnstock>=6.0.0,<7" "vnstock-oapi>=0.1.0,<1"
+          .venv/bin/pip install pandas numpy requests "python-telegram-bot==20.7"
+          .venv/bin/vnstock version
+          .venv/bin/python -c "from vnstock import Market; import vnstock_oapi; print('vnstock 6 OK')"
+          .venv/bin/python -c "import telegram; print('telegram OK')"
+
+      - name: Run buildlist_v6.py
+        run: .venv/bin/python buildlist_v6.py
+        env:
+          TCBS_API_KEY: ${{ secrets.TCBS_API_KEY }}
+          # runner không có keyring -> lưu token phiên TCBS vào tệp (quyền 600)
+          VNSTOCK_OAPI_SESSION_BACKEND: file
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+      - name: Commit vn_stocks_full.txt
+        if: success()
+        run: |
+          git config user.name 'github-actions'
+          git config user.email 'github-actions@github.com'
+          git add vn_stocks_full.txt || true
+          git diff --cached --quiet && echo 'No changes' && exit 0
+          git commit -m 'Auto update vn_stocks_full.txt'
+          git pull --rebase origin main
+          git push origin main
