@@ -1,0 +1,45 @@
+name: Weekly Scan v7
+
+on:
+  workflow_dispatch:
+
+# Chỉ cho chạy 1 bot tại 1 thời điểm (tránh xung đột getUpdates của Telegram)
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Không còn vnstock / vnstock-oapi: gọi thẳng TCBS OpenAPI qua tcbs_common.py
+      - name: Install dependencies
+        run: |
+          python -m pip install -U pip
+          pip install pandas numpy requests "python-telegram-bot==20.7"
+          python -c "import pandas, numpy, requests, telegram; print('deps OK')"
+
+      - name: Run weeklyscan_v7.py
+        run: python weeklyscan_v7.py
+        env:
+          TCBS_API_KEY: ${{ secrets.TCBS_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MAX_WORKERS: '10'
+          RATE_PER_MIN: '240'   # số request/phút gửi tới TCBS, hạ xuống nếu bị 429
+
+      - name: Upload TXT
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ket_qua_weekly_v7
+          path: ket_qua_weekly_*.txt
+          if-no-files-found: ignore
