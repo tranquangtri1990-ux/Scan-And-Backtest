@@ -2,6 +2,11 @@ name: Weekly Scan v7
 
 on:
   workflow_dispatch:
+    inputs:
+      realtime:
+        description: 'Tính cả nến phiên đang chạy dở (real-time). Bỏ chọn = chỉ tính nến đã đóng cửa'
+        type: boolean
+        default: true
 
 # Chỉ cho chạy 1 bot tại 1 thời điểm (tránh xung đột getUpdates của Telegram)
 concurrency:
@@ -35,6 +40,9 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MAX_WORKERS: '10'
           RATE_PER_MIN: '240'   # số request/phút gửi tới TCBS, hạ xuống nếu bị 429
+          # realtime = true  -> DROP_PARTIAL_BAR=0: giữ nến phiên đang chạy dở
+          # realtime = false -> DROP_PARTIAL_BAR=1: bỏ nến hôm nay nếu chưa qua 15:10
+          DROP_PARTIAL_BAR: ${{ inputs.realtime && '0' || '1' }}
 
       - name: Upload TXT
         if: always()
